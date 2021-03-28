@@ -83,10 +83,20 @@ impl FromBencode for RegisterPayload {
                        .map(Some)?;
                },
                (b"file_share_port", value) => {
-
+                    file_share_port = u16::decode_bencode_object(value)
+                        .context("file_share_port")
+                        .map(Some)?;
+               },
+               (unknown_field, _) => {
+                   return Err(bendy::decoding::Error::unexpected_field(String::from_utf8_lossy(unknown_field)));
                }
            }
         }
-        Ok()
+        let file_meta_info_report = file_meta_info_report.ok_or_else(|| bendy::decoding::Error::missing_field("file_meta_info_report"))?;
+        let file_share_port = file_share_port.ok_or_else(|| bendy::decoding::Error::missing_field("file_share_port"))?;
+        Ok(RegisterPayload {
+            file_meta_info_report,
+            file_share_port
+        })
     }
 }
