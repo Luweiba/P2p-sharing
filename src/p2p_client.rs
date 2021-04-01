@@ -1,15 +1,15 @@
 use crate::file_manager::LocalFileManager;
 use crate::peer_to_peer::PeerToPeerManager;
 use crate::peer_to_tracker::PeerToTrackerManager;
-use crate::peers_info_manager::PeersInfoManager;
 use crate::thread_communication_message::{LFToPIMessage, P2PToPIMessage, P2TToPIMessage};
-use crate::types::{FileMetaInfo, FilePieceInfo, PeerInfo};
+use crate::types::{FileMetaInfo, FilePieceInfo, PeerInfo, PeersInfoTable};
 use std::error::Error;
 use std::io::Write;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use crate::peers_info_manager::PeersInfoManagerOfPeer;
 
 const CHANNEL_DEFAULT_SIZE: usize = 100;
 pub struct P2PClient {
@@ -47,6 +47,8 @@ impl P2PClient {
         &mut self,
         tracker_ip: Ipv4Addr,
         tracker_port: u16,
+        peer_info_sync_open_port: u16,
+
     ) -> Result<(), Box<dyn Error>> {
         // 创建线程间通信channel
         let (lf2pi_sender, lf2pi_receiver) = mpsc::channel::<LFToPIMessage>(CHANNEL_DEFAULT_SIZE);
@@ -72,10 +74,14 @@ impl P2PClient {
             .register_to_tracker(
                 local_file_manager.get_file_meta_info_report(),
                 peer_to_peer_manager.get_open_port(),
+                peer_info_sync_open_port,
                 p2t2pi_sender,
                 pi2p2t_receiver,
             )
             .await?;
+        println!("Initialize PeerInfoManager");
+        let mut peer_info_manager = PeersInfoManagerOfPeer::new(PeersInfoTable::new());
+        peer_info_manager.start(self.local_bind_ip, peer_info_sync_open_port, pi2lf_sender, lf2pi_receiver, pi2p2t_sender, p2t2pi_receiver, pi2p2p_sender, p2p2pi_receiver).await?;
         Ok(())
     }
 }
