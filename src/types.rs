@@ -1,9 +1,8 @@
 use bendy::decoding::{FromBencode, Object, ResultExt};
-use bendy::encoding::{SingleItemEncoder, ToBencode, Error};
+use bendy::encoding::{Error, SingleItemEncoder, ToBencode};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::net::{SocketAddr, SocketAddrV4};
-use std::collections::HashMap;
-use crate::peers_info_manager::PeersInfoUpdateCommand;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct FileMetaInfo {
@@ -68,6 +67,9 @@ impl PeerInfo {
         self.peer_ip.clone()
     }
 
+    pub fn get_peer_id(&self) -> u32 {
+        self.peer_id
+    }
 }
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct PeersInfoTable {
@@ -102,7 +104,9 @@ impl PeersInfoTable {
                 file_peer_id_vec.push(peer_id);
                 for file_piece_meta_info in file_meta_info.pieces_info.iter() {
                     let file_piece_sha3_code = file_piece_meta_info.sha3_code.clone();
-                    let file_piece_peer_id_vec = files_piece_info_hash_map.entry(file_piece_sha3_code).or_insert(vec![]);
+                    let file_piece_peer_id_vec = files_piece_info_hash_map
+                        .entry(file_piece_sha3_code)
+                        .or_insert(vec![]);
                     file_piece_peer_id_vec.push(peer_id);
                 }
             }
@@ -115,19 +119,47 @@ impl PeersInfoTable {
         }
     }
     // 用于Tracker的初始化
-    pub fn tracker_new(tracker_ip: Vec<u8>, peer_open_port: u16, files_meta_info: Vec<FileMetaInfo>) -> Self {
+    pub fn tracker_new(
+        tracker_ip: Vec<u8>,
+        peer_open_port: u16,
+        files_meta_info: Vec<FileMetaInfo>,
+    ) -> Self {
         let peer_info = PeerInfo::new(0, tracker_ip, peer_open_port, files_meta_info);
         Self::from_peers_info(vec![peer_info])
     }
 
     // set_peer_info_table
-    pub fn from_set_peer_info_table_packet(&mut self, peer_info_table: PeersInfoTable) {
+    pub fn update_from_set_peer_info_table_packet(&mut self, peer_info_table: PeersInfoTable) {
         self.peers_info = peer_info_table.peers_info;
         self.files_piece_info_hash_map = peer_info_table.files_piece_info_hash_map;
         self.files_info_hash_map = peer_info_table.files_info_hash_map;
     }
     // 修改peers_info信息
-    pub fn update(&mut self, update_command: PeersInfoUpdateCommand) {}
+    pub fn update_file(&mut self, updated_file_meta_info: Vec<FileMetaInfo>, peer_id: u32) {
+        println!("update file info");
+        // 更新peer_info
+        for peer_info in self.peers_info.iter_mut() {
+            if peer_info.peer_id == peer_id {
+                peer_info
+                    .peer_file_meta_info_report
+                    .extend_from_slice(&updated_file_meta_info);
+            }
+        }
+        // 更新hashmap
+        for file_meta_info in updated_file_meta_info {
+            let sha3_code = file_meta_info.sha3_code;
+            let file_peer_id_vec = self.files_info_hash_map.entry(sha3_code).or_insert(vec![]);
+            file_peer_id_vec.push(peer_id);
+            for file_piece_meta_info in file_meta_info.pieces_info {
+                let piece_sha3_code = file_piece_meta_info.sha3_code;
+                let file_piece_peer_id_vec = self
+                    .files_piece_info_hash_map
+                    .entry(piece_sha3_code)
+                    .or_insert(vec![]);
+                file_piece_peer_id_vec.push(peer_id);
+            }
+        }
+    }
 
     // 处理接收的peerInfo信息
     pub fn add_one_peer_info(&mut self, peer_info: PeerInfo) {
@@ -143,7 +175,10 @@ impl PeersInfoTable {
             // 处理文件的片去重的信息
             for piece_info in meta_info.pieces_info {
                 let piece_sha3_code = piece_info.sha3_code;
-                let piece_peer_id_vec = self.files_piece_info_hash_map.entry(piece_sha3_code).or_insert(vec![]);
+                let piece_peer_id_vec = self
+                    .files_piece_info_hash_map
+                    .entry(piece_sha3_code)
+                    .or_insert(vec![]);
                 piece_peer_id_vec.push(peer_id);
             }
         }
@@ -153,8 +188,69 @@ impl PeersInfoTable {
     pub fn get_a_snapshot(&self) -> Self {
         self.clone()
     }
-}
 
+    pub fn handle_peer_dropped(&mut self, dropped_peer_id: u32) {
+        let mut dropped_peer_index = self.peers_info.len();
+        for (index, peer_info) in self.peers_info.iter().enumerate() {
+            if peer_info.peer_id == dropped_peer_id {
+                dropped_peer_index = index;
+            }
+            // 删除存储在Hash表中的Peer信息
+            let file_meta_info_report = &peer_info.peer_file_meta_info_report;
+            for file_meta_info in file_meta_info_report {
+                let file_sha3_code = &file_meta_info.sha3_code;
+                let mut delete_pair_flag = false;
+                if let Some(file_peer_id_vec) = self.files_info_hash_map.get_mut(file_sha3_code) {
+                    let mut dropped_index= file_peer_id_vec.len();
+                    for (index, peer_id) in file_peer_id_vec.iter().enumerate() {
+                        if *peer_id == dropped_peer_id {
+                            dropped_index = index;
+                            break;
+                        }
+                    }
+                    if dropped_index < file_peer_id_vec.len() {
+                        file_peer_id_vec.remove(dropped_index);
+                        //println!("删除file_peer_id {}", dropped_peer_id);
+                        if file_peer_id_vec.is_empty() {
+                            delete_pair_flag = true;
+                        }
+                    }
+                }
+                if delete_pair_flag {
+                    self.files_info_hash_map.remove(file_sha3_code);
+                }
+                // 处理file_piece的Hash表中的Peer信息
+                let file_piece_meta_info_report = &file_meta_info.pieces_info;
+                for file_piece_meta_info in file_piece_meta_info_report {
+                    let file_piece_sha3_code = &file_piece_meta_info.sha3_code;
+                    let mut delete_pair_flag = false;
+                    if let Some(file_piece_peer_id_vec) = self.files_piece_info_hash_map.get_mut(file_piece_sha3_code) {
+                        let mut dropped_index = file_piece_peer_id_vec.len();
+                        for (index, peer_id) in file_piece_peer_id_vec.iter().enumerate() {
+                            if *peer_id == dropped_peer_id {
+                                dropped_index = index;
+                                break;
+                            }
+                        }
+                        if dropped_index < file_piece_peer_id_vec.len() {
+                            file_piece_peer_id_vec.remove(dropped_index);
+                            //println!("Piece删除file_peer_id {}", dropped_peer_id);
+                            if file_piece_peer_id_vec.is_empty() {
+                                delete_pair_flag = true;
+                            }
+                        }
+                    }
+                    if delete_pair_flag {
+                        self.files_piece_info_hash_map.remove(file_piece_sha3_code);
+                    }
+                }
+            }
+        }
+        if dropped_peer_index < self.peers_info.len() {
+            self.peers_info.remove(dropped_peer_index);
+        }
+    }
+}
 
 impl ToBencode for PeersInfoTable {
     const MAX_DEPTH: usize = 10;
@@ -165,9 +261,7 @@ impl ToBencode for PeersInfoTable {
     //     // file_piece_sha3_code => Peer_id
     //     files_piece_info_hash_map: HashMap<Vec<u8>, Vec<u32>>,
     fn encode(&self, encoder: SingleItemEncoder) -> Result<(), bendy::encoding::Error> {
-        encoder.emit_dict(|mut e| {
-            e.emit_pair(b"peers_info", &self.peers_info)
-        })?;
+        encoder.emit_dict(|mut e| e.emit_pair(b"peers_info", &self.peers_info))?;
         Ok(())
     }
 }
@@ -183,7 +277,7 @@ impl FromBencode for PeersInfoTable {
                     peers_info = Vec::<PeerInfo>::decode_bencode_object(value)
                         .context("peers_info")
                         .map(Some)?;
-                },
+                }
                 (unknown_field, _) => {
                     return Err(bendy::decoding::Error::unexpected_field(
                         String::from_utf8_lossy(unknown_field),
@@ -191,7 +285,8 @@ impl FromBencode for PeersInfoTable {
                 }
             }
         }
-        let peers_info = peers_info.ok_or_else(|| bendy::decoding::Error::missing_field("peers_info"))?;
+        let peers_info =
+            peers_info.ok_or_else(|| bendy::decoding::Error::missing_field("peers_info"))?;
         Ok(PeersInfoTable::from_peers_info(peers_info))
     }
 }

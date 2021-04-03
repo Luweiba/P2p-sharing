@@ -1,5 +1,6 @@
 #![allow(unused)]
 pub mod file_manager;
+pub mod keep_alive_manager;
 pub mod message;
 pub mod p2p_client;
 pub mod p2p_tracker;
