@@ -2,7 +2,9 @@ use crate::file_manager::LocalFileManager;
 use crate::peer_to_peer::PeerToPeerManager;
 use crate::peer_to_tracker::PeerToTrackerManager;
 use crate::peers_info_manager::PeersInfoManagerOfPeer;
-use crate::thread_communication_message::{LFToPIMessage, P2PToPIMessage, P2TToPIMessage};
+use crate::thread_communication_message::{
+    LFToPIMessage, P2PToLFMessage, P2PToPIMessage, P2TToPIMessage,
+};
 use crate::types::{FileMetaInfo, FilePieceInfo, PeerInfo, PeersInfoTable};
 use std::error::Error;
 use std::io::Write;
@@ -17,14 +19,6 @@ pub struct P2PClient {
     open_port: u16,
     local_base_directory: PathBuf,
     piece_size: u32,
-    // 全局唯一的Peer信息表（peer_id, peer_ip, peer_open_port, peer_file_meta_info_report)
-    // peers_info: Option<PeersInfoManager>,
-    // local File meta info report ( `may change when get message from tracker` )
-    // local_file_manager: LocalFileManager,
-    // Peer to Tracker manager
-    // peer_to_tracker_manager: Option<PeerToTrackerManager>,
-    // Peer to Peer
-    // peer_to_peer_manager: PeerToPeerManager,
 }
 
 impl P2PClient {
@@ -62,9 +56,10 @@ impl P2PClient {
             mpsc::channel::<P2PToPIMessage>(CHANNEL_DEFAULT_SIZE);
         let (pi2p2p_sender, pi2p2p_receiver) =
             mpsc::channel::<P2PToPIMessage>(CHANNEL_DEFAULT_SIZE);
-
+        let (p2p2lf_sender, p2p2lf_receiver) =
+            mpsc::channel::<P2PToLFMessage>(CHANNEL_DEFAULT_SIZE);
         let peer_to_peer_manager =
-            PeerToPeerManager::new(self.local_bind_ip, self.open_port).await?;
+            PeerToPeerManager::new(self.local_bind_ip.clone(), self.open_port);
         // 初始化本地文件信息与实时更新模块
         let mut local_file_manager = LocalFileManager::new_and_initialize(
             self.local_base_directory.clone(),
@@ -72,11 +67,14 @@ impl P2PClient {
         )
         .await?;
         local_file_manager
-            .start_scaning_and_updating_periodically(
+            .start_scanning_and_updating_periodically(
                 scanning_interval,
                 lf2pi_sender,
                 pi2lf_receiver,
             )
+            .await;
+        local_file_manager
+            .start_peer_to_peer_service(p2p2lf_receiver)
             .await;
 
         let mut peer_to_tracker_manager = PeerToTrackerManager::new(tracker_ip, tracker_port);
@@ -89,6 +87,10 @@ impl P2PClient {
                 pi2p2t_receiver,
             )
             .await?;
+        let mut peer_to_peer_manager = PeerToPeerManager::new(self.local_bind_ip, self.open_port);
+        peer_to_peer_manager
+            .start_distributing_and_downloading(p2p2pi_sender, pi2p2p_receiver, p2p2lf_sender)
+            .await;
         println!("Initialize PeerInfoManager");
         let mut peer_info_manager = PeersInfoManagerOfPeer::new(PeersInfoTable::new());
         peer_info_manager

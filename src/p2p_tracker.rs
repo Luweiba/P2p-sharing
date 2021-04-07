@@ -4,7 +4,7 @@ use crate::peer_to_peer::PeerToPeerManager;
 use crate::peer_to_tracker::TrackerToPeerManager;
 use crate::peers_info_manager::PeersInfoManagerOfTracker;
 use crate::thread_communication_message::{
-    KAToPIMessage, LFToPIMessage, P2PToPIMessage, P2TToPIMessage, T2PToPIMessage,
+    KAToPIMessage, LFToPIMessage, P2PToLFMessage, P2PToPIMessage, P2TToPIMessage, T2PToPIMessage,
 };
 use crate::types::PeersInfoTable;
 use std::error::Error;
@@ -73,9 +73,9 @@ impl P2PTracker {
             mpsc::channel::<P2PToPIMessage>(CHANNEL_DEFAULT_SIZE);
         let (ka2pi_sender, ka2pi_receiver) = mpsc::channel::<KAToPIMessage>(CHANNEL_DEFAULT_SIZE);
         let (pi2ka_sender, pi2ka_receiver) = mpsc::channel::<KAToPIMessage>(CHANNEL_DEFAULT_SIZE);
-        // P2P
-        println!("Initialize P2P manager ...");
-        let peer_to_peer_manager = PeerToPeerManager::new(self.tracker_ip, self.open_port).await?;
+        let (p2p2lf_sender, p2p2lf_receiver) =
+            mpsc::channel::<P2PToLFMessage>(CHANNEL_DEFAULT_SIZE);
+
         println!("Initialize T2P manager ...");
         // 初始化本地文件信息与实时更新模块
         let mut local_file_manager = LocalFileManager::new_and_initialize(
@@ -84,7 +84,7 @@ impl P2PTracker {
         )
         .await?;
         local_file_manager
-            .start_scaning_and_updating_periodically(
+            .start_scanning_and_updating_periodically(
                 self.scanning_interval,
                 lf2pi_sender,
                 pi2lf_receiver,
@@ -96,6 +96,9 @@ impl P2PTracker {
             self.open_port,
             local_file_manager.get_file_meta_info_report().await,
         ));
+        local_file_manager
+            .start_peer_to_peer_service(p2p2lf_receiver)
+            .await;
         peer_info_manager
             .start(
                 self.keep_alive_interval,
@@ -121,7 +124,13 @@ impl P2PTracker {
                 .start_monitoring(ka2pi_sender, pi2ka_receiver)
                 .await;
         });
+        println!("Initialize P2P manager ...");
+        let mut peer_to_peer_manager = PeerToPeerManager::new(self.tracker_ip, self.open_port);
+        peer_to_peer_manager
+            .start_distributing_and_downloading(p2p2pi_sender, pi2p2p_receiver, p2p2lf_sender)
+            .await;
         // 启动Tracker准备接受Peer的连接
+
         let mut tracker_to_peer_manager =
             TrackerToPeerManager::new(self.tracker_ip, self.tracker_port, self.interval);
         tracker_to_peer_manager

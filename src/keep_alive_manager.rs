@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{mpsc, Mutex, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 #[derive(Debug)]
 struct KeepAliveTimer {
@@ -67,7 +67,6 @@ impl KeepAliveTimer {
             // 释放expected_count_lock
         });
     }
-
 }
 #[derive(Debug)]
 pub struct KeepAliveIPTable {
@@ -88,22 +87,30 @@ impl KeepAliveIPTable {
         }
     }
 
-    pub async fn add_one_peer(&mut self, peer_id: u32, peer_ip: Ipv4Addr, keep_alive_interval: u64, dropped_info_sender: Sender<u32>) {
-        let mut timer = KeepAliveTimer::new(keep_alive_interval, peer_id, dropped_info_sender).await;
+    pub async fn add_one_peer(
+        &mut self,
+        peer_id: u32,
+        peer_ip: Ipv4Addr,
+        keep_alive_interval: u64,
+        dropped_info_sender: Sender<u32>,
+    ) {
+        let mut timer =
+            KeepAliveTimer::new(keep_alive_interval, peer_id, dropped_info_sender).await;
         timer.flush_timing().await;
-        self.ip_to_peer_id_and_timer_map.insert(peer_ip, (peer_id, timer));
+        self.ip_to_peer_id_and_timer_map
+            .insert(peer_ip, (peer_id, timer));
         println!("KeepAliveManager 添加 Peer {}", peer_id);
     }
 
     pub fn remove_one_peer(&mut self, peer_id: u32) {
-        let mut ip_addr= Ipv4Addr::new(0, 0, 0, 0);
+        let mut ip_addr = Ipv4Addr::new(0, 0, 0, 0);
         for (key, value) in self.ip_to_peer_id_and_timer_map.iter() {
             if value.0 == peer_id {
                 ip_addr = key.clone();
                 break;
             }
         }
-        if ip_addr != Ipv4Addr::new(0,0,0,0) {
+        if ip_addr != Ipv4Addr::new(0, 0, 0, 0) {
             self.ip_to_peer_id_and_timer_map.remove(&ip_addr);
             println!("KeepAliveTable 已删除 peer {}", peer_id);
         }
@@ -171,14 +178,22 @@ impl KeepAliveManager {
             loop {
                 if let Some(message) = pi_receiver.recv().await {
                     match message {
-                        KAToPIMessage::PeerOnlineMessage { peer_id, peer_ip} => {
+                        KAToPIMessage::PeerOnlineMessage { peer_id, peer_ip } => {
                             // 处理Peer上线
                             // 获取全局锁
                             {
-                                let mut keep_alive_ip_table_lock = pi_keep_alive_ip_table.lock().await;
-                                keep_alive_ip_table_lock.add_one_peer(peer_id, peer_ip, pi_keep_alive_interval, dropped_peer_id_sender.clone()).await;
+                                let mut keep_alive_ip_table_lock =
+                                    pi_keep_alive_ip_table.lock().await;
+                                keep_alive_ip_table_lock
+                                    .add_one_peer(
+                                        peer_id,
+                                        peer_ip,
+                                        pi_keep_alive_interval,
+                                        dropped_peer_id_sender.clone(),
+                                    )
+                                    .await;
                             }
-                        },
+                        }
                         _ => {}
                     }
                 }

@@ -8,6 +8,6 @@ edition = "2018"
 
 [dependencies]
 sha3 = "0.9"
-uuid = { version = "0.8", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["full"] }
 bendy = "0.3.3"
+structopt = "0.3"

@@ -1,5 +1,5 @@
-use crate::message::{PeersInfoUpdatePayload, RegisterPayload, RegisterResponsePayload};
-use crate::thread_communication_message::{P2TToPIMessage, T2PToPIMessage};
+use crate::message::{FilePieceInfoAddPayload, PeersInfoUpdatePayload, RegisterPayload};
+use crate::thread_communication_message::{P2PToPIMessage, P2TToPIMessage, T2PToPIMessage};
 use crate::types::{FileMetaInfo, PeerInfo};
 use bendy::decoding::FromBencode;
 use bendy::encoding::ToBencode;
@@ -11,7 +11,6 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
-use uuid::Builder;
 
 const P2T_BUF_SIZE: usize = 1 << 18;
 /// 负责管理Peer与Tracker的通信
@@ -62,10 +61,11 @@ impl PeerToTrackerManager {
         register_packet.extend(payload_encoded.into_iter());
         client_stream.write(register_packet.as_slice()).await?;
         // 处理pi_receiver
+        let tracker_socket_addr = SocketAddr::from((self.tracker_ip.octets(), self.tracker_port));
         tokio::spawn(async move {
             println!("Start a thread to send local file update info to Tracker");
             loop {
-                while let Some(message) = pi_receiver.recv().await {
+                if let Some(message) = pi_receiver.recv().await {
                     println!("Get a Message from PI manager");
                     match message {
                         P2TToPIMessage::UpdatePeerInfo {
@@ -81,7 +81,28 @@ impl PeerToTrackerManager {
                             let payload_length = payload.len() as u32;
                             packet.extend_from_slice(&payload_length.to_le_bytes().to_vec());
                             packet.extend_from_slice(&payload);
-                            client_stream.write(&packet).await;
+                            let mut stream = TcpStream::connect(tracker_socket_addr).await.unwrap();
+                            stream.write(&packet).await;
+                        }
+                        P2TToPIMessage::UpdatePieceDownloadedInfo {
+                            peer_id,
+                            file_piece_info,
+                            file_meta_info_with_empty_piece,
+                        } => {
+                            let mut packet = Vec::<u8>::new();
+                            packet.push(8u8);
+                            let payload = FilePieceInfoAddPayload::new(
+                                peer_id,
+                                file_piece_info,
+                                file_meta_info_with_empty_piece,
+                            )
+                            .to_bencode()
+                            .unwrap();
+                            let payload_len = payload.len() as u32;
+                            packet.extend_from_slice(&payload_len.to_le_bytes().to_vec());
+                            packet.extend_from_slice(&payload);
+                            let mut stream = TcpStream::connect(tracker_socket_addr).await.unwrap();
+                            stream.write(&packet).await;
                         }
                         _ => {}
                     }
@@ -152,73 +173,110 @@ impl TrackerToPeerManager {
                 // 获取对等方IP地址
                 let peer_ip_port = stream.peer_addr().unwrap().port();
                 // 只支持IPv4
+                let mut is_packet_header_coming = false;
+                let mut packet_expected_length = u32::MAX - 10000;
+                let mut type_id = 29;
+                let mut packet = Vec::new();
                 if let IpAddr::V4(peer_ip) = stream.peer_addr().unwrap().ip() {
                     while let Ok(nbytes) = stream.read(&mut buf[..]).await {
-                        if nbytes < 5 {
-                            continue;
-                        }
-                        let type_id = buf[0];
-                        let payload_bytes = [buf[1], buf[2], buf[3], buf[4]];
-                        let payload_length = u32::from_le_bytes(payload_bytes);
-                        assert_eq!(payload_length, (nbytes - 5) as u32);
-                        match type_id {
-                            // Register 包
-                            //     // 发送本地共享文件信息
-                            //     file_meta_info_report: Vec<FileMetaInfo>,
-                            //     // 用于共享文件的 端口号
-                            //     file_share_port: u16,
-                            1u8 => {
-                                if let Ok(register) = RegisterPayload::from_bencode(&buf[5..nbytes])
-                                {
-                                    println!("get Register Packet");
-                                    let file_meta_info_report =
-                                        register.get_file_meta_info_report();
-                                    let peer_open_port = register.get_file_share_port();
-                                    let peer_info_sync_open_port =
-                                        register.get_peer_info_sync_port();
-                                    // TODO
-                                    // 更新PeersInfoTable
-                                    let peer_id;
-                                    {
-                                        let mut peer_id_lock = peer_id_allocated_mutex.lock().await;
-                                        peer_id = peer_id_lock.clone();
-                                        peer_id_lock.checked_add(1);
-                                    }
-                                    let peer_info = PeerInfo::new(
-                                        peer_id.clone(),
-                                        peer_ip.octets().to_vec(),
-                                        peer_open_port,
-                                        file_meta_info_report,
-                                    );
-                                    // TODO !!!
-                                    println!("send msg to PeerInfoManager");
-                                    pi_sender_clone
-                                        .send(T2PToPIMessage::new_add_one_peer_info(
-                                            peer_info,
-                                            peer_info_sync_open_port,
-                                        ))
-                                        .await;
-                                }
-                            },
-                            4u8 => {
-                                // 收到一个peer的本地更新信息
-                                println!("get an update info from a Peer");
-                                if let Ok(peers_info_update_payload) =
-                                    PeersInfoUpdatePayload::from_bencode(&buf[5..nbytes])
-                                {
-                                    let peer_id = peers_info_update_payload.get_peer_id();
-                                    let updated_file_meta_info =
-                                        peers_info_update_payload.get_updated_file_meta_info();
-                                    pi_sender_clone
-                                        .send(T2PToPIMessage::new_update_one_peer_info(
-                                            peer_id,
-                                            updated_file_meta_info,
-                                        ))
-                                        .await;
-                                }
+                        if is_packet_header_coming {
+                            packet.extend_from_slice(&buf[..nbytes]);
+                            println!(
+                                "get a packet, packet length: {}, current packet length: {}",
+                                nbytes,
+                                packet.len()
+                            );
+                            if packet.len() == packet_expected_length as usize {
+                                break;
                             }
-                            _ => {}
+                        } else {
+                            if nbytes < 5 {
+                                continue;
+                            }
+                            type_id = buf[0];
+                            let payload_bytes = [buf[1], buf[2], buf[3], buf[4]];
+                            packet.extend_from_slice(&buf[..nbytes]);
+                            let payload_length = u32::from_le_bytes(payload_bytes);
+                            packet_expected_length = payload_length + 5;
+                            is_packet_header_coming = true;
+                            println!("get a packet header, type: {}, payload_length: {}, current packet: length: {}", type_id, payload_length, packet.len());
+                            if packet_expected_length as usize == packet.len() {
+                                break;
+                            }
                         }
+                    }
+                    assert_eq!(packet_expected_length as usize, packet.len());
+                    match type_id {
+                        // Register 包
+                        //     // 发送本地共享文件信息
+                        //     file_meta_info_report: Vec<FileMetaInfo>,
+                        //     // 用于共享文件的 端口号
+                        //     file_share_port: u16,
+                        1u8 => {
+                            if let Ok(register) = RegisterPayload::from_bencode(&packet[5..]) {
+                                println!("get Register Packet");
+                                let file_meta_info_report = register.get_file_meta_info_report();
+                                let peer_open_port = register.get_file_share_port();
+                                let peer_info_sync_open_port = register.get_peer_info_sync_port();
+                                // TODO
+                                // 更新PeersInfoTable
+                                let peer_id;
+                                {
+                                    let mut peer_id_lock = peer_id_allocated_mutex.lock().await;
+                                    peer_id = peer_id_lock.clone();
+                                    *peer_id_lock += 1;
+                                }
+                                let peer_info = PeerInfo::new(
+                                    peer_id.clone(),
+                                    peer_ip.octets().to_vec(),
+                                    peer_open_port,
+                                    file_meta_info_report,
+                                );
+                                // TODO !!!
+                                println!("send msg to PeerInfoManager");
+                                pi_sender_clone
+                                    .send(T2PToPIMessage::new_add_one_peer_info(
+                                        peer_info,
+                                        peer_info_sync_open_port,
+                                    ))
+                                    .await;
+                            }
+                        }
+                        4u8 => {
+                            // 收到一个peer的本地更新信息
+                            println!("get an update info from a Peer");
+                            if let Ok(peers_info_update_payload) =
+                                PeersInfoUpdatePayload::from_bencode(&packet[5..])
+                            {
+                                let peer_id = peers_info_update_payload.get_peer_id();
+                                let updated_file_meta_info =
+                                    peers_info_update_payload.get_updated_file_meta_info();
+                                pi_sender_clone
+                                    .send(T2PToPIMessage::new_update_one_peer_info(
+                                        peer_id,
+                                        updated_file_meta_info,
+                                    ))
+                                    .await;
+                            }
+                        }
+                        8u8 => {
+                            // 收到一个peer的下载块更新
+                            println!("收到一个peer的下载块更新");
+                            if let Ok(piece_info_add_payload) =
+                                FilePieceInfoAddPayload::from_bencode(&packet[..5])
+                            {
+                                let (peer_id, file_piece_info, file_meta_info_with_empty_piece) =
+                                    piece_info_add_payload.get_inner_info();
+                                pi_sender_clone
+                                    .send(T2PToPIMessage::new_update_piece_downloaded_info(
+                                        peer_id,
+                                        file_piece_info,
+                                        file_meta_info_with_empty_piece,
+                                    ))
+                                    .await;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             });
