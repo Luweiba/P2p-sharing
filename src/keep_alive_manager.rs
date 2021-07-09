@@ -40,7 +40,6 @@ impl KeepAliveTimer {
         // 释放expected_count_lock锁
         let (sender, mut receiver) = oneshot::channel::<()>();
         let interval = self.keep_alive_interval.clone();
-        println!("Interval {}", interval);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(interval)).await;
             sender.send(());
@@ -64,10 +63,10 @@ impl KeepAliveTimer {
                     dropped_info_sender_clone.send(peer_id_clone).await;
                 }
             }
-            // 释放expected_count_lock
         });
     }
 }
+
 #[derive(Debug)]
 pub struct KeepAliveIPTable {
     ip_to_peer_id_and_timer_map: HashMap<Ipv4Addr, (u32, KeepAliveTimer)>,
@@ -99,7 +98,7 @@ impl KeepAliveIPTable {
         timer.flush_timing().await;
         self.ip_to_peer_id_and_timer_map
             .insert(peer_ip, (peer_id, timer));
-        println!("KeepAliveManager 添加 Peer {}", peer_id);
+        log::info!("KeepAliveManager 添加 Peer {}", peer_id);
     }
 
     pub fn remove_one_peer(&mut self, peer_id: u32) {
@@ -112,7 +111,7 @@ impl KeepAliveIPTable {
         }
         if ip_addr != Ipv4Addr::new(0, 0, 0, 0) {
             self.ip_to_peer_id_and_timer_map.remove(&ip_addr);
-            println!("KeepAliveTable 已删除 peer {}", peer_id);
+            log::info!("KeepAliveTable 已删除 peer {}", peer_id);
         }
     }
 }
@@ -145,7 +144,7 @@ impl KeepAliveManager {
             self.keep_alive_open_port,
         )))
         .await?;
-        println!(
+        log::info!(
             "Tracker Keep Alive Manager bind ip: {:?}",
             SocketAddr::from(SocketAddrV4::new(
                 self.tracker_ip,
@@ -157,16 +156,16 @@ impl KeepAliveManager {
         let (dropped_peer_id_sender, mut dropper_peer_id_receiver) = mpsc::channel::<u32>(10);
         let keep_alive_ip_table_clone = self.keep_alive_ip_table.clone();
         tokio::spawn(async move {
-            println!("开始监听心跳包");
+            log::info!("开始监听心跳包");
             loop {
                 if let Some(dropped_peer_id) = dropper_peer_id_receiver.recv().await {
-                    // TODO 发送掉线信息给PI manager
+                    // 发送掉线信息给PI manager
                     {
                         let mut keep_alive_ip_table_lock = keep_alive_ip_table_clone.lock().await;
                         keep_alive_ip_table_lock.remove_one_peer(dropped_peer_id);
                     }
-                    let message = KAToPIMessage::new_peer_dropped_messgae(dropped_peer_id);
-                    println!("Peer {} 掉线了", dropped_peer_id);
+                    let message = KAToPIMessage::new_peer_dropped_message(dropped_peer_id);
+                    log::info!("Peer {} 掉线了", dropped_peer_id);
                     pi_sender.send(message).await;
                 }
             }
@@ -203,8 +202,7 @@ impl KeepAliveManager {
         let keep_alive_ip_table_clone = self.keep_alive_ip_table.clone();
         loop {
             if let Ok((nbytes, peer_addr)) = keep_alive_socket.recv_from(&mut buf[..]).await {
-                println!("get a packet from {:?}, packet size {}", peer_addr, nbytes);
-                // TODO 处理Peer发来的心跳包
+                // 处理Peer发来的心跳包
                 if nbytes < 5 {
                     continue;
                 }

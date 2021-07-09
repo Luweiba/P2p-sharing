@@ -38,7 +38,7 @@ impl PeerToPeerManager {
         mut pi_receiver: Receiver<P2PToPIMessage>,
         lf_sender: Sender<P2PToLFMessage>,
     ) -> Result<(), Box<dyn Error>> {
-        println!("开启内容分发与下载服务");
+        log::info!("[P2P]: 开启内容分发与下载服务...");
         // piece_sha3_code => piece_content_in_bytes
         let piece_downloaded_buffer = Arc::new(Mutex::new(FilePieceDownloadedBuffer::new()));
         let p2p_listener = TcpListener::bind(SocketAddr::from(SocketAddrV4::new(
@@ -61,7 +61,6 @@ impl PeerToPeerManager {
                     while let Ok(nbytes) = stream.read(&mut buf[..]).await {
                         if is_packet_header_coming {
                             packet.extend_from_slice(&buf[..nbytes]);
-                            //println!("get a packet, packet length: {}, current packet length: {}", nbytes, packet.len());
                             if packet.len() == packet_expected_length as usize {
                                 break;
                             }
@@ -75,7 +74,6 @@ impl PeerToPeerManager {
                             let payload_length = u32::from_le_bytes(payload_bytes);
                             packet_expected_length = payload_length + 5;
                             is_packet_header_coming = true;
-                            //println!("get a packet header, type: {}, payload_length: {}, current packet: length: {}", type_id, payload_length, packet.len());
                             if packet_expected_length as usize == packet.len() {
                                 break;
                             }
@@ -102,7 +100,7 @@ impl PeerToPeerManager {
                                     .contains_key(&file_piece_sha3_code);
                             }
                             if is_in_buffer {
-                                println!("请求的块在buffer中");
+                                log::debug!("[P2P]: 请求的块在buffer中...");
                                 let piece_content;
                                 {
                                     let piece_downloaded_buffer_lock =
@@ -110,7 +108,6 @@ impl PeerToPeerManager {
                                     piece_content = piece_downloaded_buffer_lock
                                         .get_one_piece_content(&file_piece_sha3_code);
                                 }
-                                println!("写入缓存中的块");
                                 stream.write(&piece_content).await;
                             } else {
                                 // 块存储在本地中
@@ -122,13 +119,11 @@ impl PeerToPeerManager {
                                 tokio::spawn(async move {
                                     // 等待本地文件路径
                                     let local_path = path_receiver.await.unwrap();
-                                    println!("Get local path: {:?}", local_path);
                                     let mut file = File::open(local_path).await.unwrap();
                                     let offset = file_piece_size * file_piece_index;
                                     let mut buf = vec![0u8; (file_piece_size + 10) as usize];
                                     let mut piece_content =
                                         Vec::with_capacity(file_piece_size as usize);
-                                    println!("piece_content len: {}", piece_content.len());
                                     file.seek(SeekFrom::Start(offset as u64)).await;
                                     while let Ok(nbytes) =
                                         file.read(&mut buf[..(file_piece_size as usize)]).await
@@ -149,18 +144,10 @@ impl PeerToPeerManager {
                                             }
                                         }
                                     }
-                                    println!("文件块索引：{}, 偏移量为: {}, file_piece_size: {}, piece_content len：{}", file_piece_index, offset, file_piece_size, piece_content.len());
                                     let mut hasher = Sha3_256::new();
                                     hasher.update(&piece_content[..]);
                                     let piece_sha3_code = hasher.finalize().to_vec();
-                                    if piece_sha3_code != file_piece_sha3_code {
-                                        println!("Download assertion failed");
-                                    } else {
-                                        println!(
-                                            "piece index {} Equal Sha3_code",
-                                            file_piece_index
-                                        );
-                                    }
+                                    assert_eq!(piece_sha3_code, file_piece_sha3_code);
                                     let mut packet = Vec::new();
                                     packet.push(7u8);
                                     let piece_content_len = piece_content.len() as u32;
@@ -192,11 +179,19 @@ impl PeerToPeerManager {
                             file_download_sha3_code,
                             sender, // 告知已经下载结束
                         } => {
+                            let file_meta_info = peers_info_table_snapshot
+                                .get_file_meta_info_from_sha3_code(&file_download_sha3_code)
+                                .unwrap();
+                            log::info!(
+                                "[P2P]: 开始下载: {:?}, 文件分片大小: {}, 文件分片数: {} ",
+                                file_meta_info.get_file_name(),
+                                file_meta_info.get_file_piece_size(),
+                                file_meta_info.get_file_piece_number()
+                            );
                             let file_downloader = FileDownloader::new(
                                 file_download_sha3_code,
                                 &peers_info_table_snapshot,
                             );
-                            println!("开始下载");
                             file_downloader
                                 .start_downloading(
                                     downloading_piece_downloaded_buffer.clone(),
@@ -246,6 +241,6 @@ impl FilePieceDownloadedBuffer {
         for piece_sha3_code in piece_sha3_code_list {
             self.file_piece_downloaded_buf_map.remove(&piece_sha3_code);
         }
-        println!("缓存中的文件块释放成功");
+        log::debug!("[P2P]: 缓存中的文件块释放成功");
     }
 }

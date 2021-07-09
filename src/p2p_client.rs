@@ -66,6 +66,7 @@ impl P2PClient {
             self.piece_size,
         )
         .await?;
+        log::info!("初始化LocalFileManager...");
         local_file_manager
             .start_scanning_and_updating_periodically(
                 scanning_interval,
@@ -76,7 +77,7 @@ impl P2PClient {
         local_file_manager
             .start_peer_to_peer_service(p2p2lf_receiver)
             .await;
-
+        log::info!("初始化PeerToTrackerManager...");
         let mut peer_to_tracker_manager = PeerToTrackerManager::new(tracker_ip, tracker_port);
         peer_to_tracker_manager
             .register_to_tracker(
@@ -87,11 +88,12 @@ impl P2PClient {
                 pi2p2t_receiver,
             )
             .await?;
+        log::info!("初始化PeerToPeerManager...");
         let mut peer_to_peer_manager = PeerToPeerManager::new(self.local_bind_ip, self.open_port);
         peer_to_peer_manager
             .start_distributing_and_downloading(p2p2pi_sender, pi2p2p_receiver, p2p2lf_sender)
             .await;
-        println!("Initialize PeerInfoManager");
+        log::info!("初始化PeersInfoManager...");
         let mut peer_info_manager = PeersInfoManagerOfPeer::new(PeersInfoTable::new());
         peer_info_manager
             .start(

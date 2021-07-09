@@ -46,6 +46,14 @@ impl FileMetaInfo {
     pub fn get_file_name(&self) -> OsString {
         self.file_name.clone()
     }
+
+    pub fn get_file_piece_size(&self) -> u32 {
+        self.file_piece_size
+    }
+
+    pub fn get_file_piece_number(&self) -> usize {
+        self.pieces_info.len()
+    }
 }
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct FilePieceInfo {
@@ -180,7 +188,10 @@ impl PeersInfoTable {
     }
     // 修改peers_info信息
     pub fn update_file(&mut self, updated_file_meta_info: Vec<FileMetaInfo>, peer_id: u32) {
-        println!("update file info");
+        log::debug!(
+            "call update_file: 新增一个用户peer {}, 修改全局信息表PeerInfoTable",
+            peer_id
+        );
         // 更新peer_info
         for peer_info in self.peers_info.iter_mut() {
             if peer_info.peer_id == peer_id {
@@ -216,21 +227,24 @@ impl PeersInfoTable {
         file_piece_info: FilePieceInfo,
     ) {
         // 在peer_info表中添加块信息
-        println!("添加一个文件块信息");
+        log::debug!(
+            "添加peer的一个新增文件块信息：call add_file_piece_info from peer_id: {}",
+            peer_id
+        );
         let file_sha3_code = file_meta_info_with_empty_piece.get_file_sha3_code();
         for peer_info in self.peers_info.iter_mut() {
             if peer_info.peer_id == peer_id {
                 let mut is_first_piece_of_file = true;
                 for file_meta_info in peer_info.peer_file_meta_info_report.iter_mut() {
                     if file_meta_info.sha3_code == file_sha3_code {
-                        println!("添加文件的其他块");
+                        // println!("添加文件的其他块");
                         file_meta_info.pieces_info.push(file_piece_info.clone());
                         is_first_piece_of_file = false;
                         break;
                     }
                 }
                 if is_first_piece_of_file {
-                    println!("添加文件的第一个块");
+                    // println!("添加文件的第一个块");
                     file_meta_info_with_empty_piece
                         .pieces_info
                         .push(file_piece_info.clone());
@@ -294,6 +308,10 @@ impl PeersInfoTable {
     // 获取一份拷贝
     pub fn get_a_snapshot(&self) -> Self {
         self.clone()
+    }
+
+    pub fn get_file_meta_info_from_sha3_code(&self, sha3_code: &Vec<u8>) -> Option<&FileMetaInfo> {
+        self.file_meta_info_hash_map.get(sha3_code)
     }
 
     pub fn handle_peer_dropped(&mut self, dropped_peer_id: u32) {
@@ -482,7 +500,7 @@ impl FileDownloader {
             while let Some(_) = check_receiver.recv().await {
                 // 每收到一个信号，都检查一下是不是已经下载完了
                 piece_cnt += 1;
-                println!("已经接受块：{}， 目标块数： {}", piece_cnt, pieces_number);
+                log::info!("已经接受块：{}， 目标块数： {}", piece_cnt, pieces_number);
                 if piece_cnt == pieces_number {
                     // 已经下载完了
                     let mut sorted_piece_sha3_code = vec![Vec::new(); pieces_number];
@@ -512,10 +530,10 @@ impl FileDownloader {
                         while pos < data_len {
                             let bytes_written = file.write(&piece_content[pos..]).await.unwrap();
                             pos += bytes_written;
-                            println!("bytes_writen: {}", bytes_written);
+                            // println!("bytes_writen: {}", bytes_written);
                         }
                     }
-                    println!("文件写入成功");
+                    log::info!("文件写入成功");
                     // 删除buffer中的块
                     {
                         let mut piece_downloaded_buffer_lock =
@@ -531,7 +549,7 @@ impl FileDownloader {
             }
         });
         // 开启线程请求文件块
-        println!(
+        log::info!(
             "发起请求数： {}",
             self.file_piece_owner_table.sorted_piece_request_list.len()
         );
@@ -552,8 +570,11 @@ impl FileDownloader {
             let pi_sender_clone = pi_sender.clone();
             let check_sender_clone = check_sender.clone();
             tokio::spawn(async move {
+                log::info!("开始请求piece {}", piece_index);
                 for socket_addr in socket_addr_vec {
+                    //println!("准备连接 {:?}", socket_addr);
                     if let Ok(mut stream) = TcpStream::connect(socket_addr).await {
+                        //println!("连接 {:?} 成功", socket_addr);
                         let mut packet = Vec::<u8>::new();
                         // 发送请求包
                         packet.push(6u8);
@@ -613,7 +634,7 @@ impl FileDownloader {
                                     piece_downloaded_buffer_lock
                                         .add_one_piece(piece_sha3_code.clone(), piece_content);
                                 }
-                                println!("在buffer中插入块 index {}", piece_index);
+                                // println!("在buffer中插入块 index {}", piece_index);
                                 // TODO 给PI发送一个消息表示自己拿到块了。
                                 let file_meta_info_with_empty_piece = FileMetaInfo::new(
                                     file_sha3_code.clone(),

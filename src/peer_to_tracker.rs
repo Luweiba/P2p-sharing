@@ -63,15 +63,15 @@ impl PeerToTrackerManager {
         // 处理pi_receiver
         let tracker_socket_addr = SocketAddr::from((self.tracker_ip.octets(), self.tracker_port));
         tokio::spawn(async move {
-            println!("Start a thread to send local file update info to Tracker");
+            log::info!("[P2T]: 开启一个线程用于和Tracker通信...");
             loop {
                 if let Some(message) = pi_receiver.recv().await {
-                    println!("Get a Message from PI manager");
                     match message {
                         P2TToPIMessage::UpdatePeerInfo {
                             peer_id,
                             updated_file_meta_info,
                         } => {
+                            log::debug!("[P2T]: 收到来自PeersInfoManager的UpdatePeerInfoMessage, peer_id: {}", peer_id);
                             let mut packet = Vec::<u8>::new();
                             packet.push(4u8);
                             let payload =
@@ -89,6 +89,7 @@ impl PeerToTrackerManager {
                             file_piece_info,
                             file_meta_info_with_empty_piece,
                         } => {
+                            log::debug!("[P2T]: 收到来自PeersInfoManager的UpdatePieceDownloadedInfoMessage, peer_id: {}", peer_id);
                             let mut packet = Vec::<u8>::new();
                             packet.push(8u8);
                             let payload = FilePieceInfoAddPayload::new(
@@ -118,9 +119,7 @@ pub struct TrackerToPeerManager {
     peer_id_allocated_begin_with: Arc<Mutex<u32>>,
     // peer_id 用于标识一个对等方，Tracker的peer_id为 0
     peer_id: u32,
-    // 本机用于Peer to Tracker的TCPStream
-    // t2p_tracker_listener: TcpListener,
-    // tracker IP
+    // Tracker的IP地址
     tracker_ip: Ipv4Addr,
     // tracker port
     tracker_port: u16,
@@ -149,23 +148,22 @@ impl TrackerToPeerManager {
             self.tracker_port,
         )))
         .await?;
-        println!(
-            "Tracker Listening on {:?}",
-            SocketAddr::from((self.tracker_ip.octets(), self.tracker_port,))
+        log::info!(
+            "[T2P]: Tracker Listening on {:?}",
+            SocketAddr::from((self.tracker_ip.octets(), self.tracker_port))
         );
         let mut peers_ip = Arc::new(Mutex::new(Vec::<SocketAddr>::new()));
         let peers_ip_clone = peers_ip.clone();
         // 处理来自PeersInfoManager的信息
-        println!("Handle message from PeersInfoManagerPeer ...");
         tokio::spawn(async move {
             loop {
                 if let Some(msg) = pi_receiver.recv().await {}
             }
         });
-        println!("Ready to handle connection from Peer");
+        log::info!("[T2P]: Ready to Handle Connection From Peer");
         loop {
             let (mut stream, peer_addr) = tracker_listener.accept().await?;
-            println!("got a connection from {:?}", peer_addr);
+            log::info!("[T2P]: Got a connection from {:?}", peer_addr);
             let peer_id_allocated_mutex = self.peer_id_allocated_begin_with.clone();
             let pi_sender_clone = pi_sender.clone();
             tokio::spawn(async move {
@@ -181,11 +179,6 @@ impl TrackerToPeerManager {
                     while let Ok(nbytes) = stream.read(&mut buf[..]).await {
                         if is_packet_header_coming {
                             packet.extend_from_slice(&buf[..nbytes]);
-                            println!(
-                                "get a packet, packet length: {}, current packet length: {}",
-                                nbytes,
-                                packet.len()
-                            );
                             if packet.len() == packet_expected_length as usize {
                                 break;
                             }
@@ -199,7 +192,7 @@ impl TrackerToPeerManager {
                             let payload_length = u32::from_le_bytes(payload_bytes);
                             packet_expected_length = payload_length + 5;
                             is_packet_header_coming = true;
-                            println!("get a packet header, type: {}, payload_length: {}, current packet: length: {}", type_id, payload_length, packet.len());
+                            log::debug!("[T2P]: Get a packet header, type: {}, payload_length: {}, current packet: length: {}", type_id, payload_length, packet.len());
                             if packet_expected_length as usize == packet.len() {
                                 break;
                             }
@@ -214,7 +207,7 @@ impl TrackerToPeerManager {
                         //     file_share_port: u16,
                         1u8 => {
                             if let Ok(register) = RegisterPayload::from_bencode(&packet[5..]) {
-                                println!("get Register Packet");
+                                log::info!("[T2P]: 获得一个用户的注册包");
                                 let file_meta_info_report = register.get_file_meta_info_report();
                                 let peer_open_port = register.get_file_share_port();
                                 let peer_info_sync_open_port = register.get_peer_info_sync_port();
@@ -233,7 +226,7 @@ impl TrackerToPeerManager {
                                     file_meta_info_report,
                                 );
                                 // TODO !!!
-                                println!("send msg to PeerInfoManager");
+                                log::debug!("[T2P]: 给PeerInfoManager发消息用于注册用户信息");
                                 pi_sender_clone
                                     .send(T2PToPIMessage::new_add_one_peer_info(
                                         peer_info,
@@ -244,11 +237,11 @@ impl TrackerToPeerManager {
                         }
                         4u8 => {
                             // 收到一个peer的本地更新信息
-                            println!("get an update info from a Peer");
                             if let Ok(peers_info_update_payload) =
                                 PeersInfoUpdatePayload::from_bencode(&packet[5..])
                             {
                                 let peer_id = peers_info_update_payload.get_peer_id();
+                                log::info!("[T2P]: 获得一个Peer的文件更新, Peer id: {}", peer_id);
                                 let updated_file_meta_info =
                                     peers_info_update_payload.get_updated_file_meta_info();
                                 pi_sender_clone
@@ -261,12 +254,12 @@ impl TrackerToPeerManager {
                         }
                         8u8 => {
                             // 收到一个peer的下载块更新
-                            println!("收到一个peer的下载块更新");
                             if let Ok(piece_info_add_payload) =
-                                FilePieceInfoAddPayload::from_bencode(&packet[..5])
+                                FilePieceInfoAddPayload::from_bencode(&packet[5..])
                             {
                                 let (peer_id, file_piece_info, file_meta_info_with_empty_piece) =
                                     piece_info_add_payload.get_inner_info();
+                                log::info!("[T2P]: 获得一个Peer的下载块更新, Peer id: {}", peer_id);
                                 pi_sender_clone
                                     .send(T2PToPIMessage::new_update_piece_downloaded_info(
                                         peer_id,

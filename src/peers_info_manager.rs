@@ -55,7 +55,7 @@ impl PeersInfoManagerOfTracker {
         tokio::spawn(async move {
             loop {
                 if let Some(message) = lf_receiver.recv().await {
-                    println!("Tracker get a local file change");
+                    log::debug!("[PIT]: Tracker 获取到本地文件更新信息");
                     {
                         let mut lf_peers_info_table_lock = lf_peers_info_table.lock().await;
                         lf_peers_info_table_lock
@@ -82,7 +82,7 @@ impl PeersInfoManagerOfTracker {
                     packet.extend_from_slice(&payload_len.to_le_bytes().to_vec());
                     packet.extend_from_slice(&payload);
                     for (id, socket_addr) in ip_and_port_info_vec {
-                        println!("Tracker Send msg to peer {}", id);
+                        log::debug!("[PIT]: Tracker 把本地文件更新信息发送给 peer {}", id);
                         if let Ok(mut stream) = TcpStream::connect(socket_addr).await {
                             let packet_clone = packet.clone();
                             // 广播给每一个Peer
@@ -130,8 +130,8 @@ impl PeersInfoManagerOfTracker {
                                     )))
                                     .await
                                 {
-                                    println!(
-                                        "Connected with {:?}",
+                                    log::debug!(
+                                        "[PIT]: Connected with {:?}",
                                         SocketAddr::from(SocketAddrV4::new(
                                             Ipv4Addr::from(peer_local_bind_ip),
                                             peer_info_sync_open_port
@@ -272,6 +272,7 @@ impl PeersInfoManagerOfTracker {
                             file_meta_info_with_empty_piece,
                         } => {
                             // 首先更新本地PeersInfoTable
+                            log::debug!("[PIT]: 收到peer {} 的文件块更新信息", peer_id);
                             {
                                 let mut peers_info_table = t2p_peers_info_table.lock().await;
                                 peers_info_table.add_file_piece_info(
@@ -305,7 +306,7 @@ impl PeersInfoManagerOfTracker {
                             let payload_len = payload.len() as u32;
                             packet.extend_from_slice(&payload_len.to_le_bytes().to_vec());
                             packet.extend_from_slice(&payload);
-                            println!("广播peer {} 的新加入信息", peer_id);
+                            log::debug!("广播peer {} 的新添加块信息", peer_id);
                             for (id, socket_addr) in ip_and_port_info_vec {
                                 // 原peer可不发广播包
                                 if peer_id == id {
@@ -393,7 +394,7 @@ impl PeersInfoManagerOfTracker {
             loop {
                 // 3秒扫描一次吧
                 if let Some(_) = download_signal_receiver.recv().await {
-                    println!("收到下载文件信号");
+                    log::debug!("[PIT]: 收到下载文件信号");
                     let peers_info_table_snapshot;
                     {
                         let p2p_distributing_peers_info_table =
@@ -401,21 +402,28 @@ impl PeersInfoManagerOfTracker {
                         peers_info_table_snapshot =
                             p2p_distributing_peers_info_table.get_a_snapshot();
                     }
-                    peers_info_table_snapshot.show_resource_table();
                     let download_file_sha3_code_list =
                         peers_info_table_snapshot.get_download_file_sha3_code_list(0);
                     for download_file_sha3_code in download_file_sha3_code_list {
-                        println!("开始下载文件 {:?}", &download_file_sha3_code[..5]);
+                        // 每次下载都更新peers_info_table
+                        let download_file_peers_info_table_snapshot;
+                        {
+                            let p2p_distributing_peers_info_table =
+                                p2p_distributing_peers_info_table.lock().await;
+                            download_file_peers_info_table_snapshot =
+                                p2p_distributing_peers_info_table.get_a_snapshot();
+                        }
+                        download_file_peers_info_table_snapshot.show_resource_table();
                         let (sender, receiver) = oneshot::channel::<()>();
                         let message = P2PToPIMessage::new_downloaded_file_info_message(
                             download_file_sha3_code,
-                            peers_info_table_snapshot.clone(),
+                            download_file_peers_info_table_snapshot,
                             sender,
                         );
                         p2p_sender.send(message).await;
                         // 等待文件下载成功
                         if let Ok(_) = receiver.await {
-                            println!("成功下载");
+                            log::info!("[PIT]: 成功下载");
                         }
                     }
                 }
@@ -436,7 +444,7 @@ impl PeersInfoManagerOfTracker {
                                 ka_peers_info_table_lock.handle_peer_dropped(peer_id);
                                 ka_peers_info_table_lock.show_resource_table();
                             }
-                            println!("发现掉线Peer，本地信息已修改");
+                            log::debug!("[KAT]: 发现掉线Peer，本地信息已修改");
                             // 给其他用户发送
                             let ka_ip_and_port_info_vec;
                             {
@@ -535,7 +543,6 @@ impl PeersInfoManagerOfPeer {
                     *is_keep_alive_manager_start_lock = true;
                 }
                 loop {
-                    println!("发送心跳包");
                     udp_socket
                         .send_to(
                             &heart_beat_packet,
@@ -549,8 +556,8 @@ impl PeersInfoManagerOfPeer {
                 }
             }
         });
-        println!(
-            "Peer Listening in {:?}",
+        log::info!(
+            "[PIP]: Peer Listening on {:?}",
             SocketAddr::from(SocketAddrV4::new(local_bind_ip, peer_info_sync_open_port))
         );
         let local_peer_id_clone = local_peer_id.clone();
@@ -568,7 +575,6 @@ impl PeersInfoManagerOfPeer {
                 while let Ok(nbytes) = stream.read(&mut buf[..]).await {
                     if is_packet_header_coming {
                         packet.extend_from_slice(&buf[..nbytes]);
-                        //println!("get a packet, packet length: {}, current packet length: {}", nbytes, packet.len());
                         if packet.len() == packet_expected_length as usize {
                             break;
                         }
@@ -582,7 +588,6 @@ impl PeersInfoManagerOfPeer {
                         let payload_length = u32::from_le_bytes(payload_bytes);
                         packet_expected_length = payload_length + 5;
                         is_packet_header_coming = true;
-                        //println!("get a packet header, type: {}, payload_length: {}, current packet: length: {}", type_id, payload_length, packet.len());
                         if packet_expected_length as usize == packet.len() {
                             break;
                         }
@@ -594,7 +599,7 @@ impl PeersInfoManagerOfPeer {
                             PeerInfoAddPayload::from_bencode(&packet[5..])
                         {
                             let peer_info = peer_info_add_payload.get_inner_peer_info();
-                            println!("Get peer info add info");
+                            log::info!("获得新加入的用户信息, peer {}", peer_info.get_peer_id());
                             {
                                 let mut tracker_peers_info_table_lock =
                                     tracker_peers_info_table.lock().await;
@@ -608,7 +613,6 @@ impl PeersInfoManagerOfPeer {
                         let peers_info_set_payload =
                             PeersInfoSetPayload::from_bencode(&packet[5..]).unwrap();
                         // 获得peer_id与peer_ip
-                        println!("Get Peer_info_table");
                         {
                             let mut peer_id_lock = local_peer_id_clone.lock().await;
                             if peer_id_lock.is_none() {
@@ -639,7 +643,7 @@ impl PeersInfoManagerOfPeer {
                             let mut is_keep_alive_manager_start_lock =
                                 is_keep_alive_manager_start_clone.lock().await;
                             if !(*is_keep_alive_manager_start_lock) {
-                                println!("开启Peer Keep Alive Manager");
+                                log::info!("[PIP]: 开启PeerKeepAliveManager");
                                 keep_alive_interval_sender
                                     .send((keep_alive_interval, keep_alive_manager_open_port))
                                     .await;
@@ -652,8 +656,8 @@ impl PeersInfoManagerOfPeer {
                             PeersInfoUpdatePayload::from_bencode(&packet[5..])
                         {
                             let peer_id = peers_info_update_payload.get_peer_id();
-                            println!(
-                                "Peer get a update info from Tracker, the peer_id is {}",
+                            log::info!(
+                                "[PIP]: 获得一个Peer的文件添加信息 from Tracker, Peer id {}",
                                 peer_id
                             );
                             let updated_file_meta_info =
@@ -697,7 +701,6 @@ impl PeersInfoManagerOfPeer {
                                     file_meta_info_with_empty_piece,
                                     file_piece_info,
                                 );
-                                println!("peer {} 文件块新增信息已修改", peer_id);
                             }
                         }
                     }
@@ -713,13 +716,13 @@ impl PeersInfoManagerOfPeer {
         tokio::spawn(async move {
             loop {
                 if let Some(message) = lf_receiver.recv().await {
-                    println!("get a local file change");
+                    log::info!("[PIP]: Peer 获得本地文件更新信息");
                     {
                         // TODO 这里可能会出现死锁
                         let mut local_peer_id_lock = lf_local_peer_id_clone.lock().await;
                         if local_peer_id_lock.is_none() {
                             // 未检测到peer_id
-                            println!("未检测到peer_id");
+                            log::warn!("[PIP]: 未检测到peer_id");
                             continue;
                         } else {
                             let peer_id = local_peer_id_lock.as_ref().unwrap().clone();
@@ -732,7 +735,7 @@ impl PeersInfoManagerOfPeer {
                             }
                             // 给p2t发个更新消息
                             // TODO this
-                            println!("peer将本地更新信息发送给tracker");
+                            log::info!("[PIP]: peer将本地更新信息发送给tracker");
                             lf_p2t_sender
                                 .send(P2TToPIMessage::new_update_one_peer_info(
                                     peer_id,
@@ -801,7 +804,7 @@ impl PeersInfoManagerOfPeer {
             // 定时扫描，获取peer_id未拥有的文件的sha3_code
             loop {
                 if let Some(_) = download_signal_receiver.recv().await {
-                    println!("收到下载文件信号");
+                    log::info!("[PIP]: 收到下载文件信号");
                     let peers_info_table_snapshot;
                     {
                         let p2p_distributing_peers_info_table =
@@ -816,19 +819,27 @@ impl PeersInfoManagerOfPeer {
                     }
                     let download_file_sha3_code_list = peers_info_table_snapshot
                         .get_download_file_sha3_code_list(local_peer_id.unwrap());
-                    println!("下载文件数量： {}", download_file_sha3_code_list.len());
+                    log::info!("下载文件数量： {}", download_file_sha3_code_list.len());
                     for download_file_sha3_code in download_file_sha3_code_list {
-                        println!("开始下载文件 {:?}", &download_file_sha3_code[..5]);
+                        // 每次下载都更新peers_info_table
+                        let download_file_peers_info_table_snapshot;
+                        {
+                            let p2p_distributing_peers_info_table =
+                                p2p_distributing_peers_info_table.lock().await;
+                            download_file_peers_info_table_snapshot =
+                                p2p_distributing_peers_info_table.get_a_snapshot();
+                        }
+                        download_file_peers_info_table_snapshot.show_resource_table();
                         let (sender, receiver) = oneshot::channel::<()>();
                         let message = P2PToPIMessage::new_downloaded_file_info_message(
                             download_file_sha3_code,
-                            peers_info_table_snapshot.clone(),
+                            download_file_peers_info_table_snapshot,
                             sender,
                         );
                         p2p_sender.send(message).await;
                         // 等待文件下载成功
                         if let Ok(_) = receiver.await {
-                            println!("成功下载");
+                            log::info!("成功下载");
                         }
                     }
                 }

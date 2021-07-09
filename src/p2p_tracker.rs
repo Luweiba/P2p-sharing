@@ -14,14 +14,6 @@ use tokio::sync::mpsc;
 
 const CHANNEL_DEFAULT_SIZE: usize = 100;
 pub struct P2PTracker {
-    // 全局唯一的Peer信息表（peer_id, peer_ip, peer_open_port, peer_file_meta_info_report)
-    // peers_info: Option<PeersInfoManager>,
-    // local File meta info report ( `may change when get message from tracker` )
-    // local_file_manager: LocalFileManager,
-    // Peer to Tracker manager
-    // tracker_to_peer_manager: TrackerToPeerManager,
-    // Peer to Peer
-    // peer_to_peer_manager: PeerToPeerManager,
     tracker_ip: Ipv4Addr,
     tracker_port: u16,
     interval: u32,
@@ -59,7 +51,6 @@ impl P2PTracker {
     }
     // Tracker_to_peer 通信的目的是为了统一全局的peer信息表
     pub async fn start_tracking(&mut self) -> Result<(), Box<dyn Error>> {
-        println!("Start Tracking ...");
         // 创建线程间通信channel
         let (lf2pi_sender, lf2pi_receiver) = mpsc::channel::<LFToPIMessage>(CHANNEL_DEFAULT_SIZE);
         let (pi2lf_sender, pi2lf_receiver) = mpsc::channel::<LFToPIMessage>(CHANNEL_DEFAULT_SIZE);
@@ -76,7 +67,7 @@ impl P2PTracker {
         let (p2p2lf_sender, p2p2lf_receiver) =
             mpsc::channel::<P2PToLFMessage>(CHANNEL_DEFAULT_SIZE);
 
-        println!("Initialize T2P manager ...");
+        log::info!("初始化LocalFileManager...");
         // 初始化本地文件信息与实时更新模块
         let mut local_file_manager = LocalFileManager::new_and_initialize(
             self.local_base_directory.clone(),
@@ -91,6 +82,7 @@ impl P2PTracker {
             )
             .await;
         // 启动全局peers_info信息表管理模块
+        log::info!("初始化PeersInfoManager...");
         let mut peer_info_manager = PeersInfoManagerOfTracker::new(PeersInfoTable::tracker_new(
             self.tracker_ip.octets().to_vec(),
             self.open_port,
@@ -114,6 +106,7 @@ impl P2PTracker {
             )
             .await?;
         // 启动KeepAlive模块
+        log::info!("初始化KeepAliveManager...");
         let mut keep_alive_manager = KeepAliveManager::new(
             self.tracker_ip.clone(),
             self.keep_alive_interval,
@@ -124,13 +117,13 @@ impl P2PTracker {
                 .start_monitoring(ka2pi_sender, pi2ka_receiver)
                 .await;
         });
-        println!("Initialize P2P manager ...");
+        log::info!("初始化PeerToPeerManager...");
         let mut peer_to_peer_manager = PeerToPeerManager::new(self.tracker_ip, self.open_port);
         peer_to_peer_manager
             .start_distributing_and_downloading(p2p2pi_sender, pi2p2p_receiver, p2p2lf_sender)
             .await;
         // 启动Tracker准备接受Peer的连接
-
+        log::info!("初始化TrackerToPeerManager...");
         let mut tracker_to_peer_manager =
             TrackerToPeerManager::new(self.tracker_ip, self.tracker_port, self.interval);
         tracker_to_peer_manager

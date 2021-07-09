@@ -11,3 +11,5 @@ sha3 = "0.9"
 tokio = { version = "1", features = ["full"] }
 bendy = "0.3.3"
 structopt = "0.3"
+log = "0.4.14"
+env_logger = "0.8.3"

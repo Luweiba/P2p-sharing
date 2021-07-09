@@ -5,7 +5,7 @@ use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 
 /// local file manager to peer info manager
-/// 本地用于告知PeerInfoManager本地文件变动（TODO 暂时只有添加文件，不可删除文件
+/// 本地用于告知PeerInfoManager本地文件变动
 #[derive(Debug, Clone)]
 pub struct LFToPIMessage {
     new_files_meta_info: Vec<FileMetaInfo>,
@@ -29,8 +29,6 @@ impl LFToPIMessage {
 /// p2t manager to peer info manager
 #[derive(Debug)]
 pub enum P2TToPIMessage {
-    // True => update
-    // False => set
     AddOnePeerInfo {
         peer_info: PeerInfo,
     },
@@ -75,8 +73,6 @@ impl P2TToPIMessage {
 /// t2p manager to peer info manager
 #[derive(Debug)]
 pub enum T2PToPIMessage {
-    // True => update
-    // False => set
     AddOnePeerInfo {
         peer_info: PeerInfo,
         peer_info_sync_open_port: u16,
@@ -133,7 +129,7 @@ impl KAToPIMessage {
         Self::PeerOnlineMessage { peer_id, peer_ip }
     }
 
-    pub fn new_peer_dropped_messgae(peer_id: u32) -> Self {
+    pub fn new_peer_dropped_message(peer_id: u32) -> Self {
         Self::PeerDroppedMessage { peer_id }
     }
 }
